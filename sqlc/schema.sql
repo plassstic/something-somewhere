@@ -16,7 +16,8 @@ create table users_to_teams
 (
     user_id   text references users on update restrict on delete cascade not null,
     team_name text references teams on update restrict on delete cascade not null,
-    primary key (user_id, team_name)
+    primary key (user_id, team_name),
+    unique (user_id)
 );
 
 create table pull_requests

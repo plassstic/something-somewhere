@@ -69,18 +69,6 @@ func (PullRequestShort) FromDDL(ddl gensql.GetPRsReviewedByUserRow) PullRequestS
 	}
 }
 
-func StrSlice(v any) []string {
-	if v == nil {
-		return nil
-	}
-
-	if s, ok := v.([]string); ok {
-		return s
-	}
-
-	return nil
-}
-
 type PullRequest struct {
 	PullRequestShort
 	AssignedReviewers []string `json:"assigned_reviewers"`
@@ -93,6 +81,16 @@ func (PullRequest) FromRowWithRevs(ddl gensql.GetPRwithReviewersRow) *PullReques
 	if ddl.MergedAt.Valid {
 		mergedAt = ddl.MergedAt.Time.Format("2006-01-02 15:04:05")
 	}
+
+	assigned := make([]string, 0)
+	if cst, ok := ddl.AssignedReviewers.([]any); ok && len(cst) > 0 {
+		for _, r := range cst {
+			if sr, ok := r.(string); ok {
+				assigned = append(assigned, sr)
+			}
+		}
+	}
+
 	return &PullRequest{
 		PullRequestShort: PullRequestShort{
 			PRId:     ddl.PullReqID,
@@ -100,7 +98,7 @@ func (PullRequest) FromRowWithRevs(ddl gensql.GetPRwithReviewersRow) *PullReques
 			AuthorId: ddl.AuthorID,
 			Status:   ddl.PullReqStatus,
 		},
-		AssignedReviewers: StrSlice(ddl.AssignedReviewers),
+		AssignedReviewers: assigned,
 		CreatedAt:         ddl.CreatedAt.Time.Format("2006-01-02 15:04:05"),
 		MergedAt:          mergedAt,
 	}
@@ -155,7 +153,7 @@ type MergePRRequest struct {
 
 type ReassignReviewerRequest struct {
 	PRId      string `json:"pull_request_id" validate:"required"`
-	OldUserID string `json:"old_user_id" validate:"required"`
+	OldUserID string `json:"old_reviewer_id" validate:"required"`
 }
 
 type GetUserReviewsQuery struct {

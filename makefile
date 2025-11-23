@@ -1,6 +1,6 @@
 include .env
 
-.PHONY: up uprebuild down api_uprebuild run_migrations validate_sqlc generate_sqlc
+.PHONY: up uprebuild down api_rebuild run_migrations validate_sqlc generate_sqlc
 
 up:
 	docker compose -f docker-compose.yml up -d
@@ -11,7 +11,7 @@ uprebuild:
 down:
 	docker compose -f docker-compose.yml up -d --build
 
-api_uprebuild:
+api_rebuild:
 	docker compose -f docker-compose.yml up 'api' -d --build
 
 run_migrations:

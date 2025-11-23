@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/rs/zerolog/log"
 	"github.com/samber/lo"
 	"plassstic.tech/trainee/avito/gensql"
 	"plassstic.tech/trainee/avito/internal/schema"
@@ -257,46 +257,40 @@ func (r repository) AddReviewersToPR(ctx context.Context, prID string, reviewers
 }
 
 func (r repository) ReassignReviewer(ctx context.Context, prID, oldUserID string) (newUserID string, updatedPR *schema.PullRequest, err *schema.Err) {
-	b, lerr := r.qs.IsReviewerAssigned(ctx, gensql.IsReviewerAssignedParams{
-		PullReqID: prID,
-		UserID:    oldUserID,
-	})
+	var prRow gensql.GetPRwithReviewersRow
+	var teamName string
+	var candidates []string
 
-	if lerr != nil {
-		err = schema.Err{}.Wrap(schema.Unknown, lerr)
-		return
-	} else if !b {
-		err = schema.Err{}.Wrap(schema.NotAssigned, fmt.Errorf("user %s is not assigned to PR %s", oldUserID, prID))
+	if err = r.isReviewerAssigned(ctx, prID, oldUserID); err != nil {
 		return
 	}
 
-	prRow, lerr := r.qs.GetPRwithReviewers(ctx, prID)
-
-	if lerr != nil {
-		err = schema.Err{}.Wrap(schema.NotFound, fmt.Errorf("PR %s not found", prID))
+	if prRow, err = r.getPRWithReviewers(ctx, prID); err != nil {
 		return
 	}
+
 	if prRow.PullReqStatus == gensql.PrstatMerged {
 		err = schema.Err{}.Wrap(schema.PRMerged, fmt.Errorf("cannot reassign on merged PR"))
 		return
 	}
 
-	teamName, lerr := r.qs.GetUserTeam(ctx, oldUserID)
-
-	if lerr != nil {
-		err = schema.Err{}.Wrap(schema.NotFound, fmt.Errorf("user %s not found", oldUserID))
+	if teamName, err = r.getUserTeam(ctx, oldUserID); err != nil {
 		return
 	}
 
-	candidates, lerr := r.qs.GetActiveCoworkersExcludingUsers(ctx, gensql.GetActiveCoworkersExcludingUsersParams{
-		TeamName: teamName,
-		Column2:  slices.Concat([]string{prRow.AuthorID}, schema.StrSlice(prRow.AssignedReviewers)),
-	})
+	exclude := []string{prRow.AuthorID}
+	if cst, ok := prRow.AssignedReviewers.([]any); ok && len(cst) > 0 {
+		for _, r := range cst {
+			if sr, ok := r.(string); ok {
+				exclude = append(exclude, sr)
+			}
+		}
+	}
 
-	if lerr != nil {
-		err = schema.Err{}.Wrap(schema.Unknown, lerr)
+	if candidates, err = r.getActiveTeammates(ctx, teamName, exclude); err != nil {
 		return
 	}
+
 	if len(candidates) == 0 {
 		err = schema.Err{}.Wrap(schema.NoCandidate, fmt.Errorf("no active replacement candidate in team"))
 		return
@@ -304,60 +298,120 @@ func (r repository) ReassignReviewer(ctx context.Context, prID, oldUserID string
 
 	newUserID = candidates[rand.Intn(len(candidates))]
 
-	lerr = r.qs.RemoveReviewer(ctx, gensql.RemoveReviewerParams{
+	if lerr := r.qs.RemoveReviewer(ctx, gensql.RemoveReviewerParams{
 		PullReqID: prID,
 		UserID:    oldUserID,
-	})
-
-	if lerr != nil {
+	}); lerr != nil {
 		err = schema.Err{}.Wrap(schema.Unknown, lerr)
 		return
 	}
 
-	_, lerr = r.qs.AddReviewer(ctx, gensql.AddReviewerParams{
+	if _, lerr := r.qs.AddReviewer(ctx, gensql.AddReviewerParams{
 		UserID:    newUserID,
 		PullReqID: prID,
-	})
-
-	if lerr != nil {
+	}); lerr != nil {
 		err = schema.Err{}.Wrap(schema.Unknown, lerr)
+		return
+	}
+
+	if prRow, err = r.getPRWithReviewers(ctx, prID); err != nil {
 		return
 	}
 
 	updatedPR = schema.PullRequest{}.FromRowWithRevs(prRow)
-	updatedPR.AssignedReviewers = lo.Replace(updatedPR.AssignedReviewers, oldUserID, newUserID, 1)
+
+	return
+}
+
+func (r repository) getUserTeam(ctx context.Context, userID string) (teamName string, err *schema.Err) {
+	var lerr error
+	if teamName, lerr = r.qs.GetUserTeam(ctx, userID); lerr != nil {
+		err = schema.Err{}.Wrap(schema.NotFound, fmt.Errorf("user %s not found", userID))
+	}
+
+	log.Debug().
+		Any("userid", userID).
+		Any("teamName", teamName).
+		AnErr("err", err).
+		Msg("getUserTeam")
+
+	return
+}
+
+func (r repository) getPRWithReviewers(ctx context.Context, prID string) (pr gensql.GetPRwithReviewersRow, err *schema.Err) {
+	var lerr error
+	if pr, lerr = r.qs.GetPRwithReviewers(ctx, prID); lerr != nil {
+		err = schema.Err{}.Wrap(schema.NotFound, fmt.Errorf("PR %s not found", prID))
+	}
+
+	log.Debug().
+		Any("prid", prID).
+		Any("pr", pr).
+		AnErr("err", err).
+		Msg("getPRWithReviewers")
+
+	return
+}
+
+func (r repository) isReviewerAssigned(ctx context.Context, prID string, userID string) (err *schema.Err) {
+	b, lerr := r.qs.IsReviewerAssigned(ctx, gensql.IsReviewerAssignedParams{
+		PullReqID: prID,
+		UserID:    userID,
+	})
+
+	if lerr != nil {
+		err = schema.Err{}.Wrap(schema.Unknown, lerr)
+	} else if !b {
+		err = schema.Err{}.Wrap(schema.NotAssigned, fmt.Errorf("user %s is not assigned to PR %s", userID, prID))
+	}
+
+	log.Debug().
+		Any("userid", userID).
+		Any("prID", prID).
+		AnErr("err", err).
+		Msg("isReviewerAssigned")
 
 	return
 }
 
 func (r repository) AssignReviewersToPR(ctx context.Context, prID, authorID string) (reviewers []string, err *schema.Err) {
+	var candidates []string
 	teamName, lerr := r.qs.GetUserTeam(ctx, authorID)
 	if lerr != nil {
 		err = schema.Err{}.Wrap(schema.NotFound, fmt.Errorf("user %s not found", authorID))
 		return
 	}
 
-	candidates, lerr := r.qs.GetActiveCoworkersExcludingUsers(ctx, gensql.GetActiveCoworkersExcludingUsersParams{
+	if candidates, err = r.getActiveTeammates(ctx, teamName, []string{authorID}); err != nil {
+		return
+	}
+
+	reviewers = candidates[:min(len(candidates), 2)]
+
+	if lerr = r.AddReviewersToPR(ctx, prID, reviewers); lerr != nil {
+		err = schema.Err{}.Wrap(schema.Unknown, lerr)
+		return
+	}
+
+	return
+}
+
+func (r repository) getActiveTeammates(ctx context.Context, teamName string, exclude []string) (candidates []string, err *schema.Err) {
+	var lerr error
+
+	if candidates, lerr = r.qs.GetActiveTeammates(ctx, gensql.GetActiveTeammatesParams{
 		TeamName: teamName,
-		Column2:  []string{authorID},
-	})
-	if lerr != nil {
+		Column2:  exclude,
+	}); lerr != nil {
 		err = schema.Err{}.Wrap(schema.Unknown, lerr)
-		return
 	}
 
-	assignCount := 2
-	if len(candidates) < 2 {
-		assignCount = len(candidates)
-	}
-
-	reviewers = candidates[:assignCount]
-
-	lerr = r.AddReviewersToPR(ctx, prID, reviewers)
-	if lerr != nil {
-		err = schema.Err{}.Wrap(schema.Unknown, lerr)
-		return
-	}
+	log.Debug().
+		Any("team", teamName).
+		Any("exc", exclude).
+		Any("candidates", candidates).
+		AnErr("err", err).
+		Msg("getActiveTeammates")
 
 	return
 }

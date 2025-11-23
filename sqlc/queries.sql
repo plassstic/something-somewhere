@@ -84,7 +84,7 @@ inner join users_to_teams uttf on utt.team_name = uttf.team_name
 where uttf.user_id = $1 
   and utt.user_id <> $1;
 
--- name: GetActiveCoworkersExcludingUsers :many
+-- name: GetActiveTeammates :many
 select utt.user_id 
 from users_to_teams utt
 inner join users u on u.user_id = utt.user_id

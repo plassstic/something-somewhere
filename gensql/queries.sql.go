@@ -114,7 +114,7 @@ func (q *Queries) CreateTeam(ctx context.Context, teamName string) (string, erro
 	return team_name, err
 }
 
-const getActiveCoworkersExcludingUsers = `-- name: GetActiveCoworkersExcludingUsers :many
+const getActiveTeammates = `-- name: GetActiveTeammates :many
 select utt.user_id 
 from users_to_teams utt
 inner join users u on u.user_id = utt.user_id
@@ -123,13 +123,13 @@ where utt.team_name = $1
   and u.user_id <> all($2::text[])
 `
 
-type GetActiveCoworkersExcludingUsersParams struct {
+type GetActiveTeammatesParams struct {
 	TeamName string
 	Column2  []string
 }
 
-func (q *Queries) GetActiveCoworkersExcludingUsers(ctx context.Context, arg GetActiveCoworkersExcludingUsersParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, getActiveCoworkersExcludingUsers, arg.TeamName, arg.Column2)
+func (q *Queries) GetActiveTeammates(ctx context.Context, arg GetActiveTeammatesParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, getActiveTeammates, arg.TeamName, arg.Column2)
 	if err != nil {
 		return nil, err
 	}
